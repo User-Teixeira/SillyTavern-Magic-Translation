@@ -6,6 +6,9 @@ import { AutoModeOptions } from 'sillytavern-utils-lib/types/translate';
 import { name1, st_echo } from 'sillytavern-utils-lib/config';
 import { languageCodes } from './types/types.js';
 import { renderPromptTemplate } from './prompt.js';
+// This import is resolved from dist/index.js at runtime by SillyTavern.
+// @ts-ignore
+import { getRegexedString, regex_placement } from '../../../regex/engine.js';
 
 interface PromptPreset {
   content: string;
@@ -78,6 +81,24 @@ const settingsManager = new ExtensionSettingsManager<ExtensionSettings>(EXTENSIO
 
 const incomingTypes = [AutoModeOptions.RESPONSES, AutoModeOptions.BOTH];
 const outgoingTypes = [AutoModeOptions.INPUT, AutoModeOptions.BOTH];
+
+/**
+ * Return the same message text that SillyTavern formats for chat display.
+ * The raw `message.mes` value can still contain content removed by
+ * display-only regex scripts, so it must not be sent directly for translation.
+ */
+function getMessageTextForTranslation(message: any, depth = 0): string {
+  if (!message || typeof message.mes !== 'string') {
+    return '';
+  }
+
+  const placement = message.is_user ? regex_placement.USER_INPUT : regex_placement.AI_OUTPUT;
+  return getRegexedString(message.mes, placement, {
+    characterOverride: message.name,
+    isMarkdown: true,
+    depth,
+  });
+}
 
 async function initUI() {
   if (!context.extensionSettings.connectionManager) {
@@ -359,12 +380,30 @@ async function translateText(
     return null;
   }
 
+  const sourceMessage = messageId !== undefined ? context.chat[messageId] : undefined;
+  const filteredMessage = sourceMessage
+    ? {
+        ...structuredClone(sourceMessage),
+        mes: getMessageTextForTranslation(sourceMessage, 0),
+      }
+    : undefined;
+  const filteredChat =
+    messageId !== undefined
+      ? structuredClone(context.chat)
+          .slice(0, messageId)
+          .map((message: any, index: number) => ({
+            ...message,
+            mes: getMessageTextForTranslation(message, messageId - index),
+          }))
+          .reverse()
+      : [];
+
   const allExtraParams: Record<string, any> = {
-    prompt: text,
+    prompt: filteredMessage?.mes ?? text,
     language: languageText,
-    chat: structuredClone(context.chat).slice(0, messageId).reverse(),
-    name: messageId !== undefined ? context.chat[messageId].name : name1,
-    message: messageId !== undefined ? context.chat[messageId] : undefined,
+    chat: filteredChat,
+    name: filteredMessage?.name ?? name1,
+    message: filteredMessage,
     ...extraParams,
   };
 
@@ -435,7 +474,7 @@ async function generateMessage(messageId: number, type: 'userInput' | 'incomingM
     for (let i = 0; i <= messageId; i++) {
       const currentMessage = context.chat[messageId - i];
       if (currentMessage) {
-        extraParams[`chat_${i + 1}`] = currentMessage.mes;
+        extraParams[`chat_${i + 1}`] = getMessageTextForTranslation(currentMessage, i);
       }
     }
   } else {
@@ -443,7 +482,7 @@ async function generateMessage(messageId: number, type: 'userInput' | 'incomingM
     for (let i = 0; i < context.chat.length; i++) {
       const chatMessage = context.chat[context.chat.length - 1 - i];
       if (chatMessage) {
-        extraParams[`chat_${i + 1}`] = chatMessage.mes;
+        extraParams[`chat_${i + 1}`] = getMessageTextForTranslation(chatMessage, i);
       }
     }
   }

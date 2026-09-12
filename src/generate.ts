@@ -2,8 +2,6 @@ import { ExtractedData } from 'sillytavern-utils-lib/types';
 import { context } from './config.js';
 import { st_echo } from 'sillytavern-utils-lib/config';
 
-const MAX_TOKENS = 4096;
-
 export async function sendGenerateRequest(profileId: string, prompt: string): Promise<string | null> {
   const profile = context.extensionSettings.connectionManager!.profiles.find((p) => p.id === profileId);
   if (!profile) {
@@ -27,7 +25,10 @@ export async function sendGenerateRequest(profileId: string, prompt: string): Pr
         role: 'user',
       },
     ],
-    MAX_TOKENS,
+    // Let the selected connection profile preset provide the token limit and
+    // all other generation parameters instead of overriding them here.
+    undefined as unknown as number,
+    { includePreset: true },
   )) as ExtractedData;
   return response.content;
 }
