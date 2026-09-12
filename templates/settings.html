@@ -33,12 +33,12 @@
                 </select>
 
                 <div class="title_restorable">
-                    <label>Prompt Preset</label>
+                    <label>Message Prompt Preset</label>
                 </div>
                 <select class="text_pole prompt_preset" title="Select a Prompt"></select>
 
                 <div class="title_restorable">
-                    <label for="prompt">Prompt</label>
+                    <label for="prompt">Message Prompt</label>
                     <button
                         class="menu_button fa-solid fa-undo interactable restore_default"
                         data-i18n="[title]Restore default"
@@ -52,6 +52,24 @@
                     <label class="checkbox_label">
                         <input type="checkbox" class="filter_code_block" />
                         Filter Code Block: Get text between ``` marks (Recommended)
+                    </label>
+                </div>
+
+                <div class="title_restorable">
+                    <label for="input_prompt">Magic Translate Input Prompt</label>
+                    <button
+                        class="menu_button fa-solid fa-undo interactable restore_input_default"
+                        data-i18n="[title]Restore default"
+                        title="Restore default"
+                    ></button>
+                </div>
+
+                <textarea class="text_pole textarea_compact input_prompt" rows="4"></textarea>
+
+                <div class="flex-container">
+                    <label class="checkbox_label">
+                        <input type="checkbox" class="input_filter_code_block" />
+                        Filter Input Code Block: Get text between ``` marks (Recommended)
                     </label>
                 </div>
             </div>

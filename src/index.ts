@@ -24,6 +24,8 @@ interface ExtensionSettings {
   autoMode: AutoModeOptions;
   promptPreset: string;
   promptPresets: Record<string, PromptPreset>;
+  inputPrompt: string;
+  inputFilterCodeBlock: boolean;
 }
 
 const VERSION = '0.1.1';
@@ -55,6 +57,17 @@ You are an expert multilingual translator. Your task is to translate the user's 
 
 Important: Your response must follow this exact format with the translation enclosed in code blocks (\`\`\`).`;
 
+const DEFAULT_INPUT_PROMPT = `# Task: Translate User Input
+
+Translate the following user-written text into {{language}}. Preserve its meaning, tone, and markdown formatting. Do not answer or continue the text.
+
+## Text to Translate
+\`\`\`
+{{prompt}}
+\`\`\`
+
+Return only the translated text enclosed in a single markdown code block.`;
+
 const defaultSettings: ExtensionSettings = {
   version: VERSION,
   formatVersion: FORMAT_VERSION,
@@ -69,6 +82,8 @@ const defaultSettings: ExtensionSettings = {
       filterCodeBlock: true,
     },
   },
+  inputPrompt: DEFAULT_INPUT_PROMPT,
+  inputFilterCodeBlock: true,
 };
 
 // Keys for extension settings
@@ -83,9 +98,9 @@ const incomingTypes = [AutoModeOptions.RESPONSES, AutoModeOptions.BOTH];
 const outgoingTypes = [AutoModeOptions.INPUT, AutoModeOptions.BOTH];
 
 /**
- * Return the same message text that SillyTavern formats for chat display.
- * The raw `message.mes` value can still contain content removed by
- * display-only regex scripts, so it must not be sent directly for translation.
+ * Apply the same regex scripts that SillyTavern uses for outgoing prompts.
+ * The raw `message.mes` value can still contain content excluded from model
+ * context, so it must not be sent directly for translation.
  */
 function getMessageTextForTranslation(message: any, depth = 0): string {
   if (!message || typeof message.mes !== 'string') {
@@ -95,7 +110,7 @@ function getMessageTextForTranslation(message: any, depth = 0): string {
   const placement = message.is_user ? regex_placement.USER_INPUT : regex_placement.AI_OUTPUT;
   return getRegexedString(message.mes, placement, {
     characterOverride: message.name,
-    isMarkdown: true,
+    isPrompt: true,
     depth,
   });
 }
@@ -210,7 +225,18 @@ async function initUI() {
       }
 
       const settings = settingsManager.getSettings();
-      const translatedText = await translateText(textToTranslate, undefined, settings.internalLanguage);
+      const translatedText = await translateText(
+        textToTranslate,
+        undefined,
+        settings.internalLanguage,
+        undefined,
+        undefined,
+        {},
+        {
+          content: settings.inputPrompt,
+          filterCodeBlock: settings.inputFilterCodeBlock,
+        },
+      );
 
       if (translatedText) {
         if (isSelection) {
@@ -247,6 +273,8 @@ async function initSettings() {
   const settingsElement = $('.magic-translation-settings');
   const promptElement = settingsElement.find('.prompt');
   const filterCodeBlockElement = settingsElement.find('.filter_code_block');
+  const inputPromptElement = settingsElement.find('.input_prompt');
+  const inputFilterCodeBlockElement = settingsElement.find('.input_filter_code_block');
 
   // Use buildPresetSelect for preset management
   buildPresetSelect('.magic-translation-settings select.prompt_preset', {
@@ -324,6 +352,27 @@ async function initSettings() {
     settingsManager.saveSettings();
   });
 
+  inputPromptElement.val(settings.inputPrompt);
+  inputPromptElement.on('change', function () {
+    settings.inputPrompt = inputPromptElement.val() as string;
+    settingsManager.saveSettings();
+  });
+
+  settingsElement.find('.restore_input_default').on('click', async function () {
+    const confirm = await context.Popup.show.confirm('Restore default input prompt?', 'Restore Default');
+    if (!confirm) return;
+
+    inputPromptElement.val(DEFAULT_INPUT_PROMPT);
+    settings.inputPrompt = DEFAULT_INPUT_PROMPT;
+    settingsManager.saveSettings();
+  });
+
+  inputFilterCodeBlockElement.prop('checked', settings.inputFilterCodeBlock);
+  inputFilterCodeBlockElement.on('change', function () {
+    settings.inputFilterCodeBlock = inputFilterCodeBlockElement.prop('checked');
+    settingsManager.saveSettings();
+  });
+
   const targetLanguageElement = settingsElement.find('.target_language');
   targetLanguageElement.val(settings.targetLanguage);
   targetLanguageElement.on('change', function () {
@@ -348,6 +397,7 @@ async function translateText(
   profileId?: string,
   preset?: string,
   extraParams: Record<string, string> = {},
+  promptOverride?: PromptPreset,
 ): Promise<string | null> {
   const settings = settingsManager.getSettings();
   let selectedProfileId = profileId ?? settings.profile;
@@ -367,7 +417,7 @@ async function translateText(
   }
 
   const selectedPresetName = preset ?? settings.promptPreset;
-  const selectedPreset = settings.promptPresets[selectedPresetName];
+  const selectedPreset = promptOverride ?? settings.promptPresets[selectedPresetName];
   if (!selectedPreset || !selectedPreset.content) {
     st_echo('error', `Prompt preset "${selectedPresetName}" not found.`);
     return null;
