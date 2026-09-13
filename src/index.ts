@@ -115,7 +115,7 @@ function stopMessageTranslation(messageId: number): boolean {
   controller.abort();
   messageTranslationControllers.delete(messageId);
   setTranslationButtonState(messageId, false);
-  st_echo('info', 'Translation stopped');
+  st_echo('error', 'Translation stopped');
   return true;
 }
 
