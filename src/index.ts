@@ -89,13 +89,35 @@ const defaultSettings: ExtensionSettings = {
 // Keys for extension settings
 const EXTENSION_KEY = 'magicTranslation';
 
-// Message IDs that are currently being generated
-let generating: number[] = [];
+// Abort controllers for message translations that are currently being generated.
+const messageTranslationControllers = new Map<number, AbortController>();
 
 const settingsManager = new ExtensionSettingsManager<ExtensionSettings>(EXTENSION_KEY, defaultSettings);
 
 const incomingTypes = [AutoModeOptions.RESPONSES, AutoModeOptions.BOTH];
 const outgoingTypes = [AutoModeOptions.INPUT, AutoModeOptions.BOTH];
+
+function setTranslationButtonState(messageId: number, isTranslating: boolean): void {
+  const button = $(`.mes[mesid="${messageId}"] .mes_magic_translation_button`);
+  button
+    .toggleClass('fa-globe', !isTranslating)
+    .toggleClass('fa-circle-stop', isTranslating)
+    .toggleClass('magic_translation_stop_button', isTranslating)
+    .attr('title', isTranslating ? 'Stop Translation' : 'Magic Translate');
+}
+
+function stopMessageTranslation(messageId: number): boolean {
+  const controller = messageTranslationControllers.get(messageId);
+  if (!controller) {
+    return false;
+  }
+
+  controller.abort();
+  messageTranslationControllers.delete(messageId);
+  setTranslationButtonState(messageId, false);
+  st_echo('info', 'Translation stopped');
+  return true;
+}
 
 /**
  * Apply the same regex scripts that SillyTavern uses for outgoing prompts.
@@ -136,12 +158,18 @@ async function initUI() {
       st_echo('error', `Could not find message with id ${messageId}`);
       return;
     }
+    if (stopMessageTranslation(messageId)) {
+      return;
+    }
     if (message?.extra?.display_text) {
       delete message.extra.display_text;
       st_updateMessageBlock(messageId, message);
       return;
     }
-    await generateMessage(messageId, 'incomingMessage');
+    const translated = await generateMessage(messageId, 'incomingMessage');
+    if (!translated) {
+      return;
+    }
     const eventData = {
       messageId,
       type: 'incomingMessage',
@@ -154,7 +182,10 @@ async function initUI() {
   const settings = settingsManager.getSettings();
   context.eventSource.on(EventNames.MESSAGE_UPDATED, async (messageId: number) => {
     if (incomingTypes.includes(settings.autoMode)) {
-      await generateMessage(messageId, 'incomingMessage');
+      const translated = await generateMessage(messageId, 'incomingMessage');
+      if (!translated) {
+        return;
+      }
       context.eventSource.emit('magic_translation_done', {
         messageId,
         type: 'incomingMessage',
@@ -164,7 +195,10 @@ async function initUI() {
   });
   context.eventSource.on(EventNames.IMPERSONATE_READY, async (messageId: number) => {
     if (outgoingTypes.includes(settings.autoMode)) {
-      await generateMessage(messageId, 'impersonate');
+      const translated = await generateMessage(messageId, 'impersonate');
+      if (!translated) {
+        return;
+      }
       const eventData = {
         messageId,
         type: 'impersonate',
@@ -178,7 +212,10 @@ async function initUI() {
   // @ts-ignore
   context.eventSource.makeFirst(EventNames.CHARACTER_MESSAGE_RENDERED, async (messageId: number) => {
     if (incomingTypes.includes(settings.autoMode)) {
-      await generateMessage(messageId, 'incomingMessage');
+      const translated = await generateMessage(messageId, 'incomingMessage');
+      if (!translated) {
+        return;
+      }
       const eventData = {
         messageId,
         type: 'incomingMessage',
@@ -191,7 +228,10 @@ async function initUI() {
   // @ts-ignore
   context.eventSource.makeFirst(EventNames.USER_MESSAGE_RENDERED, async (messageId: number) => {
     if (outgoingTypes.includes(settings.autoMode)) {
-      await generateMessage(messageId, 'userInput');
+      const translated = await generateMessage(messageId, 'userInput');
+      if (!translated) {
+        return;
+      }
       const eventData = {
         messageId,
         type: 'userInput',
@@ -398,6 +438,7 @@ async function translateText(
   preset?: string,
   extraParams: Record<string, string> = {},
   promptOverride?: PromptPreset,
+  signal?: AbortSignal,
 ): Promise<string | null> {
   const settings = settingsManager.getSettings();
   let selectedProfileId = profileId ?? settings.profile;
@@ -462,7 +503,7 @@ async function translateText(
   );
 
   try {
-    const response = await sendGenerateRequest(selectedProfileId, renderedPrompt);
+    const response = await sendGenerateRequest(selectedProfileId, renderedPrompt, signal);
     if (!response) {
       return null;
     }
@@ -476,6 +517,9 @@ async function translateText(
     }
     return displayText;
   } catch (error) {
+    if (signal?.aborted) {
+      return null;
+    }
     console.error(error);
     st_echo('error', `Translation failed: ${error}`);
     return null;
@@ -486,7 +530,10 @@ async function translateText(
  * @param messageId If type is 'impersonate', messageId is the message impersonate
  * @param type userInput: User sended message, incomingMessage: Message from LLM, impersonate: Message impersonate
  */
-async function generateMessage(messageId: number, type: 'userInput' | 'incomingMessage' | 'impersonate') {
+async function generateMessage(
+  messageId: number,
+  type: 'userInput' | 'incomingMessage' | 'impersonate',
+): Promise<boolean> {
   const settings = settingsManager.getSettings();
   const profileId = settings.profile;
   if (!profileId) {
@@ -502,17 +549,17 @@ async function generateMessage(messageId: number, type: 'userInput' | 'incomingM
     }
 
     st_echo('warning', warningMessage);
-    return;
+    return false;
   }
 
   const message = type !== 'impersonate' ? context.chat[messageId] : undefined;
   if (!message && type !== 'impersonate') {
     st_echo('error', `Could not find message with id ${messageId}`);
-    return;
+    return false;
   }
-  if (generating.includes(messageId) && message) {
+  if (messageTranslationControllers.has(messageId) && message) {
     st_echo('warning', 'Translation is already in progress');
-    return;
+    return false;
   }
 
   const languageCode = type === 'userInput' ? settings.internalLanguage : settings.targetLanguage;
@@ -537,8 +584,10 @@ async function generateMessage(messageId: number, type: 'userInput' | 'incomingM
     }
   }
 
-  if (message) {
-    generating.push(messageId);
+  const controller = message ? new AbortController() : undefined;
+  if (controller) {
+    messageTranslationControllers.set(messageId, controller);
+    setTranslationButtonState(messageId, true);
   }
   try {
     const displayText = await translateText(
@@ -548,10 +597,12 @@ async function generateMessage(messageId: number, type: 'userInput' | 'incomingM
       undefined, // Use default profile from settings
       undefined, // Use default preset from settings
       extraParams,
+      undefined,
+      controller?.signal,
     );
 
-    if (!displayText) {
-      return;
+    if (!displayText || controller?.signal.aborted) {
+      return false;
     }
 
     if (message) {
@@ -568,12 +619,18 @@ async function generateMessage(messageId: number, type: 'userInput' | 'incomingM
     } else {
       $('#send_textarea').val(displayText);
     }
+    return true;
   } catch (error) {
+    if (controller?.signal.aborted) {
+      return false;
+    }
     console.error(error);
     st_echo('error', `Translation failed: ${error}`);
+    return false;
   } finally {
-    if (message) {
-      generating = generating.filter((id) => id !== messageId);
+    if (controller && messageTranslationControllers.get(messageId) === controller) {
+      messageTranslationControllers.delete(messageId);
+      setTranslationButtonState(messageId, false);
     }
   }
 }

@@ -28,13 +28,14 @@ describe('sendGenerateRequest', () => {
   });
 
   it('lets the selected preset provide generation parameters', async () => {
-    await sendGenerateRequest('profile-1', 'Translate this');
+    const controller = new AbortController();
+    await sendGenerateRequest('profile-1', 'Translate this', controller.signal);
 
     expect(mockSendRequest).toHaveBeenCalledWith(
       'profile-1',
       [{ content: 'Translate this', role: 'user' }],
       undefined,
-      { includePreset: true },
+      { includePreset: true, signal: controller.signal },
     );
   });
 });

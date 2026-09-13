@@ -4,3 +4,7 @@
 .magic-translation-settings .preset-select-container {
   width: 100%;
 }
+
+.mes_magic_translation_button.magic_translation_stop_button {
+  color: var(--warning-color, #e74c3c);
+}
